@@ -55,7 +55,7 @@ if st.button("🚀 Organizar Pacotes e Rota", type="primary", use_container_widt
             [{"plataforma": "Mercado Livre ou Shopee ou Shein", "codigo": "4 últimos dígitos do rastreio ou nome do destinatário", "endereco": "Rua, Número, Bairro, Cidade - UF"}]
             Remova pacotes duplicados caso o mesmo endereço/código apareça em dois prints diferentes.
             """
-            resp = client.models.generate_content(model="gemini-2.5-flash", contents=[prompt] + imagens)
+            resp = client.models.generate_content(model="gemini-3.8-flash", contents=[prompt] + imagens)
             texto_limpo = resp.text.replace("```json", "").replace("```", "").strip()
             pacotes = json.loads(texto_limpo)
         except Exception as e:
