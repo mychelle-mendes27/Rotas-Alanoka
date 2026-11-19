@@ -3,6 +3,7 @@ import json
 import time
 import base64
 import io
+import re
 import urllib.parse
 import requests
 import pandas as pd
@@ -11,7 +12,7 @@ from geopy.geocoders import Nominatim
 
 st.set_page_config(page_title="Organizador de Rotas", page_icon="📦", layout="centered")
 st.title("📦 Organizador de Rotas")
-st.caption("Misture Mercado Livre, Shopee e Shein em uma única rota otimizada (Suporta 100+ entregas)")
+st.caption("Misture Mercado Livre, Shopee e Shein em uma única rota otimizada (Agrupa condomínios)")
 
 API_KEY = st.secrets.get("API_KEY", "")
 if not API_KEY:
@@ -19,6 +20,12 @@ if not API_KEY:
 
 ponto_partida = st.text_input("📍 Endereço de Partida (Galpão ou sua casa):", value="Rua Koesa, 100, Kobrasol, São José - SC")
 arquivos = st.file_uploader("📸 Selecione os prints das listas de endereços (ML, Shopee, Shein):", type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True)
+
+def normalizar_endereco_base(end):
+    texto = end.lower().strip()
+    texto = re.sub(r'\b(bloco|bl|apto|ap|apartamento|torre|casa|sala|sl|quadra|qd|lote|lt)\b.*', '', texto)
+    texto = re.sub(r'[^a-z0-9\s]', '', texto)
+    return " ".join(texto.split())
 
 def gerar_links_google_maps(origem, lista_enderecos):
     links = []
@@ -42,14 +49,14 @@ def ler_lote_gemini(api_key, lote_arquivos):
     prompt = """
     Analise estas capturas de tela de aplicativos de entrega (Mercado Livre, Shopee, Shein).
     Extraia TODOS os pacotes listados e retorne APENAS um array JSON válido, sem texto extra e sem crases de markdown, neste formato exato:
-    [{"plataforma": "Mercado Livre ou Shopee ou Shein", "codigo": "4 últimos dígitos do rastreio ou nome do destinatário", "endereco": "Rua, Número, Bairro, Cidade - UF"}]
+    [{"plataforma": "Mercado Livre ou Shopee ou Shein", "codigo": "4 últimos dígitos do rastreio ou nome do destinatário", "endereco": "Rua, Número, Complemento/Apto, Bairro, Cidade - UF"}]
     """
     partes = [{"text": prompt}]
     for arq in lote_arquivos:
         img = Image.open(arq).convert("RGB")
-        img.thumbnail((900, 900))
+        img.thumbnail((800, 800))
         buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=80)
+        img.save(buf, format="JPEG", quality=75)
         b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
         partes.append({"inline_data": {"mime_type": "image/jpeg", "data": b64}})
 
@@ -61,12 +68,13 @@ def ler_lote_gemini(api_key, lote_arquivos):
         }
     }
 
-    modelos = ["gemini-flash-latest", "gemini-3-flash-preview", "gemini-3.8-flash"]
+    # Vai direto no modelo que respondeu rápido e sem travar
+    modelos = ["gemini-3-flash-preview", "gemini-flash-latest"]
     ultimo_erro = ""
     for modelo in modelos:
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent?key={api_key.strip()}"
-            resp = requests.post(url, json=payload, timeout=60)
+            resp = requests.post(url, json=payload, timeout=25)
             if resp.status_code == 200:
                 dados = resp.json()
                 texto = dados["candidates"][0]["content"]["parts"][0]["text"]
@@ -88,13 +96,13 @@ if st.button("🚀 Organizar Pacotes e Rota", type="primary", use_container_widt
 
     pacotes_brutos = []
     barra_leitura = st.progress(0, text="🔍 Lendo prints em lotes...")
-    tamanho_lote = 3  # Lê de 3 em 3 imagens para não estourar o limite em rotas grandes
+    tamanho_lote = 2
     total_lotes = (len(arquivos) + tamanho_lote - 1) // tamanho_lote
 
     try:
         for idx_lote in range(total_lotes):
             lote = arquivos[idx_lote * tamanho_lote : (idx_lote + 1) * tamanho_lote]
-            barra_leitura.progress((idx_lote) / total_lotes, text=f"🔍 Lendo lote {idx_lote + 1} de {total_lotes} ({len(lote)} prints)...")
+            barra_leitura.progress(idx_lote / total_lotes, text=f"🔍 Lendo lote {idx_lote + 1} de {total_lotes} ({len(lote)} prints)...")
             resultado_lote = ler_lote_gemini(API_KEY, lote)
             pacotes_brutos.extend(resultado_lote)
         barra_leitura.progress(1.0, text="✅ Leitura dos prints concluída!")
@@ -102,7 +110,6 @@ if st.button("🚀 Organizar Pacotes e Rota", type="primary", use_container_widt
         st.error(f"Erro ao ler os prints: {e}")
         st.stop()
 
-    # Remove duplicados mantendo a ordem
     vistos = set()
     pacotes = []
     for p in pacotes_brutos:
@@ -115,8 +122,20 @@ if st.button("🚀 Organizar Pacotes e Rota", type="primary", use_container_widt
         st.warning("Nenhum endereço foi identificado nos prints enviados.")
         st.stop()
 
-    st.info(f"📦 {len(pacotes)} pacotes únicos encontrados. Buscando coordenadas no mapa...")
-    geolocator = Nominatim(user_agent="roteirizador_entregas_brasil_v5")
+    grupos_dict = {}
+    for p in pacotes:
+        chave_base = normalizar_endereco_base(p["endereco"])
+        if chave_base not in grupos_dict:
+            grupos_dict[chave_base] = {
+                "endereco_principal": p["endereco"],
+                "pacotes": []
+            }
+        grupos_dict[chave_base]["pacotes"].append(p)
+
+    paradas_unicas = list(grupos_dict.values())
+    st.info(f"📦 {len(pacotes)} pacotes agrupados em {len(paradas_unicas)} parada(s) no mapa!")
+
+    geolocator = Nominatim(user_agent="roteirizador_entregas_brasil_v7")
     try:
         ini = geolocator.geocode(ponto_partida, timeout=10)
     except Exception:
@@ -128,30 +147,23 @@ if st.button("🚀 Organizar Pacotes e Rota", type="primary", use_container_widt
     coords = [(ini.latitude, ini.longitude)]
     validos = []
     nao_encontrados = []
-    cache_enderecos = {}
 
-    barra_mapa = st.progress(0, text="🗺️ Localizando endereços no mapa...")
-    total_pacotes = len(pacotes)
+    barra_mapa = st.progress(0, text="🗺️ Localizando paradas no mapa...")
+    total_paradas = len(paradas_unicas)
 
-    for idx, p in enumerate(pacotes):
-        end_texto = p["endereco"]
-        barra_mapa.progress((idx + 1) / total_pacotes, text=f"🗺️ Localizando pacote {idx + 1} de {total_pacotes}...")
-
-        if end_texto in cache_enderecos:
-            loc = cache_enderecos[end_texto]
-        else:
-            time.sleep(1.05)  # Pausa obrigatória do mapa gratuito para não bloquear seu IP
-            try:
-                loc = geolocator.geocode(end_texto, timeout=10)
-            except Exception:
-                loc = None
-            cache_enderecos[end_texto] = loc
+    for idx, grupo in enumerate(paradas_unicas):
+        barra_mapa.progress((idx + 1) / total_paradas, text=f"🗺️ Localizando parada {idx + 1} de {total_paradas}...")
+        time.sleep(1.05)
+        try:
+            loc = geolocator.geocode(grupo["endereco_principal"], timeout=10)
+        except Exception:
+            loc = None
 
         if loc:
             coords.append((loc.latitude, loc.longitude))
-            validos.append(p)
+            validos.append(grupo)
         else:
-            nao_encontrados.append(p)
+            nao_encontrados.append(grupo)
 
     if not validos:
         st.error("❌ Nenhum dos endereços dos prints foi encontrado no mapa.")
@@ -179,45 +191,59 @@ if "rota_pronta" in st.session_state:
     rota_final = st.session_state["rota_pronta"]
     nao_encontrados = st.session_state["nao_encontrados"]
     origem_salva = st.session_state["origem_salva"]
-    total = len(rota_final)
+    total_paradas = len(rota_final)
+    total_pacotes = sum(len(g["pacotes"]) for g in rota_final)
 
-    st.success(f"✅ {total} pacotes organizados na melhor sequência!")
+    st.success(f"✅ {total_pacotes} pacotes organizados em {total_paradas} paradas!")
     if nao_encontrados:
-        with st.expander(f"⚠️ {len(nao_encontrados)} endereço(s) não achado(s) no mapa"):
+        with st.expander(f"⚠️ {len(nao_encontrados)} parada(s) não achada(s) no mapa"):
             for ne in nao_encontrados:
-                st.write(f"- **{ne['plataforma']}** ({ne['codigo']}): {ne['endereco']}")
+                st.write(f"- **{ne['endereco_principal']}** ({len(ne['pacotes'])} pacote(s))")
 
     aba1, aba2 = st.tabs(["1º Carregar Carro (LIFO)", "2º Ordem de Entrega & GPS"])
     with aba1:
-        st.markdown("Escreva o número grande na caixa com pincel atômico e guarde **de trás para frente**:")
-        for idx in range(total, 0, -1):
-            p = rota_final[idx - 1]
-            if idx <= total * 0.25:
+        st.markdown("Escreva o número da parada na caixa com pincel atômico e guarde **de trás para frente** (pacotes do mesmo condomínio ficam juntos):")
+        for idx in range(total_paradas, 0, -1):
+            grupo = rota_final[idx - 1]
+            qtd = len(grupo["pacotes"])
+            if idx <= total_paradas * 0.25:
                 zona = "🟢 Banco do Carona (Saída Rápida)"
-            elif idx <= total * 0.60:
+            elif idx <= total_paradas * 0.60:
                 zona = "🟡 Banco Traseiro / Meio"
             else:
                 zona = "🔴 Fundo do Porta-malas (Últimas entregas)"
+
             with st.container(border=True):
                 col1, col2 = st.columns([1, 2])
                 col1.markdown(f"### `#{idx:02d}`")
                 col2.markdown(f"**{zona}**")
-                st.write(f"📦 **{p['plataforma']}** | ID/Cliente: `{p['codigo']}`")
-                st.write(f"📍 {p['endereco']}")
-                st.checkbox(f"Pacote #{idx:02d} guardado no carro", key=f"chk_{idx}")
+                if qtd > 1:
+                    st.warning(f"🏢 **CONDOMÍNIO / MESMO LOCAL: {qtd} PACOTES JUNTOS!**")
+                st.write(f"📍 **{grupo['endereco_principal']}**")
+                for p in grupo["pacotes"]:
+                    st.write(f"   • 📦 **{p['plataforma']}** | ID/Cliente: `{p['codigo']}` ({p['endereco']})")
+                st.checkbox(f"Parada #{idx:02d} ({qtd} pacote(s)) guardada no carro", key=f"chk_{idx}")
 
     with aba2:
         st.markdown("### 🗺️ Abrir direto no Google Maps (Blocos de 9 paradas)")
-        enderecos_ordenados = [p["endereco"] for p in rota_final]
+        enderecos_ordenados = [g["endereco_principal"] for g in rota_final]
         links_maps = gerar_links_google_maps(origem_salva, enderecos_ordenados)
         for inicio, fim, link in links_maps:
             st.link_button(f"🚗 Navegar Paradas #{inicio:02d} até #{fim:02d} no Google Maps", link, use_container_width=True)
         st.divider()
-        df = pd.DataFrame([{"Parada": f"#{i+1:02d}", "Plataforma": p["plataforma"], "Identificador": p["codigo"], "Endereco": p["endereco"]} for i, p in enumerate(rota_final)])
+        linhas_csv = []
+        for i, g in enumerate(rota_final):
+            for p in g["pacotes"]:
+                linhas_csv.append({"Parada": f"#{i+1:02d}", "Plataforma": p["plataforma"], "Identificador": p["codigo"], "Endereco": p["endereco"]})
+        df = pd.DataFrame(linhas_csv)
         st.download_button(label="📥 Baixar Planilha para Google My Maps (.csv)", data=df.to_csv(index=False).encode("utf-8-sig"), file_name="rota_mymaps.csv", mime="text/csv", use_container_width=True)
         st.divider()
         st.markdown("### 📋 Lista Corrida de Entregas (#01 até o fim)")
-        for idx, p in enumerate(rota_final, start=1):
+        for idx, grupo in enumerate(rota_final, start=1):
+            qtd = len(grupo["pacotes"])
             with st.container(border=True):
-                st.markdown(f"**Parada #{idx:02d}** — `{p['plataforma']}` ({p['codigo']})")
-                st.write(f"📍 {p['endereco']}")
+                titulo_qtd = f" — **{qtd} PACOTES JUNTOS**" if qtd > 1 else ""
+                st.markdown(f"**Parada #{idx:02d}**{titulo_qtd}")
+                st.write(f"📍 {grupo['endereco_principal']}")
+                for p in grupo["pacotes"]:
+                    st.write(f"   • `{p['plataforma']}` ({p['codigo']}) — {p['endereco']}")
