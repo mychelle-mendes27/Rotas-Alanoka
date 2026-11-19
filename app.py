@@ -8,11 +8,13 @@ from PIL import Image
 from google import genai
 from geopy.geocoders import Nominatim
 
-API_KEY = "AQ.Ab8RN6JEbAd_OrGZiLvNbe5SE4f7OaJ_Oqu0LuIoSI__8gRf9Q"
-
 st.set_page_config(page_title="Organizador de Rotas", page_icon="📦", layout="centered")
 st.title("📦 Organizador de Rotas")
 st.caption("Misture Mercado Livre, Shopee e Shein em uma única rota otimizada")
+
+API_KEY = st.secrets.get("API_KEY", "")
+if not API_KEY:
+    API_KEY = st.text_input("🔑 Cole sua Chave da API do Google AI Studio:", type="password")
 
 ponto_partida = st.text_input("📍 Endereço de Partida (Galpão ou sua casa):", value="Rua Koesa, 100, Kobrasol, São José - SC")
 arquivos = st.file_uploader("📸 Selecione os prints das listas de endereços (ML, Shopee, Shein):", type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True)
@@ -36,6 +38,9 @@ def gerar_links_google_maps(origem, lista_enderecos):
     return links
 
 if st.button("🚀 Organizar Pacotes e Rota", type="primary", use_container_width=True):
+    if not API_KEY.strip():
+        st.error("⚠️ Cole a sua nova chave da API na caixinha lá em cima!")
+        st.stop()
     if not arquivos:
         st.warning("⚠️ Selecione pelo menos um print de tela antes de apertar o botão.")
         st.stop()
