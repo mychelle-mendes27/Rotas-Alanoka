@@ -11,7 +11,7 @@ from geopy.geocoders import Nominatim
 
 st.set_page_config(page_title="Organizador de Rotas", page_icon="📦", layout="centered")
 st.title("📦 Organizador de Rotas")
-st.caption("Misture Mercado Livre, Shopee e Shein em uma única rota otimizada")
+st.caption("Misture Mercado Livre, Shopee e Shein em uma única rota otimizada (Suporta 100+ entregas)")
 
 API_KEY = st.secrets.get("API_KEY", "")
 if not API_KEY:
@@ -38,19 +38,18 @@ def gerar_links_google_maps(origem, lista_enderecos):
         ponto_atual = destino
     return links
 
-def ler_prints_gemini_direto(api_key, lista_arquivos):
+def ler_lote_gemini(api_key, lote_arquivos):
     prompt = """
     Analise estas capturas de tela de aplicativos de entrega (Mercado Livre, Shopee, Shein).
     Extraia TODOS os pacotes listados e retorne APENAS um array JSON válido, sem texto extra e sem crases de markdown, neste formato exato:
     [{"plataforma": "Mercado Livre ou Shopee ou Shein", "codigo": "4 últimos dígitos do rastreio ou nome do destinatário", "endereco": "Rua, Número, Bairro, Cidade - UF"}]
-    Remova pacotes duplicados caso o mesmo endereço/código apareça em dois prints diferentes.
     """
     partes = [{"text": prompt}]
-    for arq in lista_arquivos:
+    for arq in lote_arquivos:
         img = Image.open(arq).convert("RGB")
-        img.thumbnail((800, 800))
+        img.thumbnail((900, 900))
         buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=75)
+        img.save(buf, format="JPEG", quality=80)
         b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
         partes.append({"inline_data": {"mime_type": "image/jpeg", "data": b64}})
 
@@ -87,50 +86,82 @@ if st.button("🚀 Organizar Pacotes e Rota", type="primary", use_container_widt
         st.warning("⚠️ Selecione pelo menos um print de tela antes de apertar o botão.")
         st.stop()
 
-    with st.spinner("🔍 Lendo endereços e códigos nos prints..."):
-        try:
-            pacotes = ler_prints_gemini_direto(API_KEY, arquivos)
-        except Exception as e:
-            st.error(f"Erro ao ler os prints: {e}")
-            st.stop()
+    pacotes_brutos = []
+    barra_leitura = st.progress(0, text="🔍 Lendo prints em lotes...")
+    tamanho_lote = 3  # Lê de 3 em 3 imagens para não estourar o limite em rotas grandes
+    total_lotes = (len(arquivos) + tamanho_lote - 1) // tamanho_lote
+
+    try:
+        for idx_lote in range(total_lotes):
+            lote = arquivos[idx_lote * tamanho_lote : (idx_lote + 1) * tamanho_lote]
+            barra_leitura.progress((idx_lote) / total_lotes, text=f"🔍 Lendo lote {idx_lote + 1} de {total_lotes} ({len(lote)} prints)...")
+            resultado_lote = ler_lote_gemini(API_KEY, lote)
+            pacotes_brutos.extend(resultado_lote)
+        barra_leitura.progress(1.0, text="✅ Leitura dos prints concluída!")
+    except Exception as e:
+        st.error(f"Erro ao ler os prints: {e}")
+        st.stop()
+
+    # Remove duplicados mantendo a ordem
+    vistos = set()
+    pacotes = []
+    for p in pacotes_brutos:
+        chave = f"{p.get('codigo', '').strip().lower()}_{p.get('endereco', '').strip().lower()}"
+        if chave not in vistos:
+            vistos.add(chave)
+            pacotes.append(p)
 
     if not pacotes:
         st.warning("Nenhum endereço foi identificado nos prints enviados.")
         st.stop()
 
-    with st.spinner(f"🗺️ Localizando {len(pacotes)} pacotes e calculando o menor trajeto..."):
-        geolocator = Nominatim(user_agent="roteirizador_entregas_brasil_v4")
-        try:
-            ini = geolocator.geocode(ponto_partida, timeout=10)
-        except Exception:
-            ini = None
-        if not ini:
-            st.error("❌ Não encontrei o seu 'Endereço de Partida' no mapa. Tente escrever com Rua, Número, Bairro e Cidade.")
-            st.stop()
+    st.info(f"📦 {len(pacotes)} pacotes únicos encontrados. Buscando coordenadas no mapa...")
+    geolocator = Nominatim(user_agent="roteirizador_entregas_brasil_v5")
+    try:
+        ini = geolocator.geocode(ponto_partida, timeout=10)
+    except Exception:
+        ini = None
+    if not ini:
+        st.error("❌ Não encontrei o seu 'Endereço de Partida' no mapa. Tente escrever com Rua, Número, Bairro e Cidade.")
+        st.stop()
 
-        coords = [(ini.latitude, ini.longitude)]
-        validos = []
-        nao_encontrados = []
-        for p in pacotes:
-            time.sleep(1)
+    coords = [(ini.latitude, ini.longitude)]
+    validos = []
+    nao_encontrados = []
+    cache_enderecos = {}
+
+    barra_mapa = st.progress(0, text="🗺️ Localizando endereços no mapa...")
+    total_pacotes = len(pacotes)
+
+    for idx, p in enumerate(pacotes):
+        end_texto = p["endereco"]
+        barra_mapa.progress((idx + 1) / total_pacotes, text=f"🗺️ Localizando pacote {idx + 1} de {total_pacotes}...")
+
+        if end_texto in cache_enderecos:
+            loc = cache_enderecos[end_texto]
+        else:
+            time.sleep(1.05)  # Pausa obrigatória do mapa gratuito para não bloquear seu IP
             try:
-                loc = geolocator.geocode(p["endereco"], timeout=10)
-                if loc:
-                    coords.append((loc.latitude, loc.longitude))
-                    validos.append(p)
-                else:
-                    nao_encontrados.append(p)
+                loc = geolocator.geocode(end_texto, timeout=10)
             except Exception:
-                nao_encontrados.append(p)
+                loc = None
+            cache_enderecos[end_texto] = loc
 
-        if not validos:
-            st.error("❌ Nenhum dos endereços dos prints foi encontrado no mapa.")
-            st.stop()
+        if loc:
+            coords.append((loc.latitude, loc.longitude))
+            validos.append(p)
+        else:
+            nao_encontrados.append(p)
 
+    if not validos:
+        st.error("❌ Nenhum dos endereços dos prints foi encontrado no mapa.")
+        st.stop()
+
+    with st.spinner(f"🚀 Calculando a rota mais curta entre {len(validos)} paradas..."):
         coords_str = ";".join([f"{lon},{lat}" for lat, lon in coords])
         url_osrm = f"http://router.project-osrm.org/trip/v1/driving/{coords_str}?source=first&roundtrip=false"
         try:
-            res_osrm = requests.get(url_osrm, timeout=15).json()
+            res_osrm = requests.get(url_osrm, timeout=25).json()
             if res_osrm.get("code") == "Ok":
                 waypoints = res_osrm["waypoints"]
                 ordem = sorted(range(len(waypoints)), key=lambda i: waypoints[i]["waypoint_index"])
@@ -176,7 +207,7 @@ if "rota_pronta" in st.session_state:
                 st.checkbox(f"Pacote #{idx:02d} guardado no carro", key=f"chk_{idx}")
 
     with aba2:
-        st.markdown("### 🗺️ Abrir direto no Google Maps")
+        st.markdown("### 🗺️ Abrir direto no Google Maps (Blocos de 9 paradas)")
         enderecos_ordenados = [p["endereco"] for p in rota_final]
         links_maps = gerar_links_google_maps(origem_salva, enderecos_ordenados)
         for inicio, fim, link in links_maps:
