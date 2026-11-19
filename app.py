@@ -1,12 +1,12 @@
 import streamlit as st
 import json
 import time
+import base64
+import io
 import urllib.parse
 import requests
 import pandas as pd
 from PIL import Image
-from google import genai
-from google.genai import types
 from geopy.geocoders import Nominatim
 
 st.set_page_config(page_title="Organizador de Rotas", page_icon="📦", layout="centered")
@@ -38,9 +38,44 @@ def gerar_links_google_maps(origem, lista_enderecos):
         ponto_atual = destino
     return links
 
+def ler_prints_gemini_direto(api_key, lista_arquivos):
+    prompt = """
+    Analise estas capturas de tela de aplicativos de entrega (Mercado Livre, Shopee, Shein).
+    Extraia TODOS os pacotes listados e retorne APENAS um array JSON válido, sem texto extra e sem crases de markdown, neste formato exato:
+    [{"plataforma": "Mercado Livre ou Shopee ou Shein", "codigo": "4 últimos dígitos do rastreio ou nome do destinatário", "endereco": "Rua, Número, Bairro, Cidade - UF"}]
+    Remova pacotes duplicados caso o mesmo endereço/código apareça em dois prints diferentes.
+    """
+    partes = [{"text": prompt}]
+    for arq in lista_arquivos:
+        img = Image.open(arq).convert("RGB")
+        img.thumbnail((1024, 1024))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        partes.append({"inline_data": {"mime_type": "image/jpeg", "data": b64}})
+
+    payload = {
+        "contents": [{"parts": partes}],
+        "generationConfig": {"temperature": 0.1}
+    }
+
+    modelos = ["gemini-3.8-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"]
+    ultimo_erro = ""
+    for modelo in modelos:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent?key={api_key.strip()}"
+        resp = requests.post(url, json=payload, timeout=20)
+        if resp.status_code == 200:
+            dados = resp.json()
+            texto = dados["candidates"][0]["content"]["parts"][0]["text"]
+            texto_limpo = texto.replace("```json", "").replace("```", "").strip()
+            return json.loads(texto_limpo)
+        else:
+            ultimo_erro = f"{modelo}: {resp.status_code} - {resp.text}"
+    raise Exception(ultimo_erro)
+
 if st.button("🚀 Organizar Pacotes e Rota", type="primary", use_container_width=True):
     if not API_KEY.strip():
-        st.error("⚠️ Cole a sua nova chave da API na caixinha lá em cima!")
+        st.error("⚠️ Cole a sua chave da API na caixinha lá em cima!")
         st.stop()
     if not arquivos:
         st.warning("⚠️ Selecione pelo menos um print de tela antes de apertar o botão.")
@@ -48,31 +83,7 @@ if st.button("🚀 Organizar Pacotes e Rota", type="primary", use_container_widt
 
     with st.spinner("🔍 Lendo endereços e códigos nos prints..."):
         try:
-            client = genai.Client(
-                api_key=API_KEY.strip(),
-                http_options=types.HttpOptions(timeout=60000)
-            )
-            imagens = []
-            for arq in arquivos:
-                img = Image.open(arq)
-                img.thumbnail((1024, 1024))
-                imagens.append(img)
-
-            prompt = """
-            Analise estas capturas de tela de aplicativos de entrega (Mercado Livre, Shopee, Shein).
-            Extraia TODOS os pacotes listados e retorne APENAS um array JSON válido, sem texto extra e sem crases de markdown, neste formato exato:
-            [{"plataforma": "Mercado Livre ou Shopee ou Shein", "codigo": "4 últimos dígitos do rastreio ou nome do destinatário", "endereco": "Rua, Número, Bairro, Cidade - UF"}]
-            Remova pacotes duplicados caso o mesmo endereço/código apareça em dois prints diferentes.
-            """
-            resp = client.models.generate_content(
-                model="gemini-3.8-flash",
-                contents=[prompt] + imagens,
-                config=types.GenerateContentConfig(
-                    thinking_config=types.ThinkingConfig(thinking_budget=0)
-                )
-            )
-            texto_limpo = resp.text.replace("```json", "").replace("```", "").strip()
-            pacotes = json.loads(texto_limpo)
+            pacotes = ler_prints_gemini_direto(API_KEY, arquivos)
         except Exception as e:
             st.error(f"Erro ao ler os prints: {e}")
             st.stop()
@@ -82,7 +93,7 @@ if st.button("🚀 Organizar Pacotes e Rota", type="primary", use_container_widt
         st.stop()
 
     with st.spinner(f"🗺️ Localizando {len(pacotes)} pacotes e calculando o menor trajeto..."):
-        geolocator = Nominatim(user_agent="roteirizador_entregas_brasil_v2")
+        geolocator = Nominatim(user_agent="roteirizador_entregas_brasil_v3")
         try:
             ini = geolocator.geocode(ponto_partida, timeout=10)
         except Exception:
