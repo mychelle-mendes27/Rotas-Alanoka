@@ -48,9 +48,9 @@ def ler_prints_gemini_direto(api_key, lista_arquivos):
     partes = [{"text": prompt}]
     for arq in lista_arquivos:
         img = Image.open(arq).convert("RGB")
-        img.thumbnail((1024, 1024))
+        img.thumbnail((900, 900))
         buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=85)
+        img.save(buf, format="JPEG", quality=80)
         b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
         partes.append({"inline_data": {"mime_type": "image/jpeg", "data": b64}})
 
@@ -59,18 +59,21 @@ def ler_prints_gemini_direto(api_key, lista_arquivos):
         "generationConfig": {"temperature": 0.1}
     }
 
-    modelos = ["gemini-3.8-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"]
+    modelos = ["gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-3.8-flash"]
     ultimo_erro = ""
     for modelo in modelos:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent?key={api_key.strip()}"
-        resp = requests.post(url, json=payload, timeout=20)
-        if resp.status_code == 200:
-            dados = resp.json()
-            texto = dados["candidates"][0]["content"]["parts"][0]["text"]
-            texto_limpo = texto.replace("```json", "").replace("```", "").strip()
-            return json.loads(texto_limpo)
-        else:
-            ultimo_erro = f"{modelo}: {resp.status_code} - {resp.text}"
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent?key={api_key.strip()}"
+            resp = requests.post(url, json=payload, timeout=45)
+            if resp.status_code == 200:
+                dados = resp.json()
+                texto = dados["candidates"][0]["content"]["parts"][0]["text"]
+                texto_limpo = texto.replace("```json", "").replace("```", "").strip()
+                return json.loads(texto_limpo)
+            else:
+                ultimo_erro = f"{modelo}: {resp.status_code} - {resp.text}"
+        except Exception as err:
+            ultimo_erro = f"{modelo}: {err}"
     raise Exception(ultimo_erro)
 
 if st.button("🚀 Organizar Pacotes e Rota", type="primary", use_container_width=True):
