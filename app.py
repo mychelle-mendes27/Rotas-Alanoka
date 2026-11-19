@@ -48,30 +48,33 @@ def ler_prints_gemini_direto(api_key, lista_arquivos):
     partes = [{"text": prompt}]
     for arq in lista_arquivos:
         img = Image.open(arq).convert("RGB")
-        img.thumbnail((900, 900))
+        img.thumbnail((800, 800))
         buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=80)
+        img.save(buf, format="JPEG", quality=75)
         b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
         partes.append({"inline_data": {"mime_type": "image/jpeg", "data": b64}})
 
     payload = {
         "contents": [{"parts": partes}],
-        "generationConfig": {"temperature": 0.1}
+        "generationConfig": {
+            "temperature": 0.1,
+            "thinkingConfig": {"thinkingBudget": 0}
+        }
     }
 
-    modelos = ["gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-3.8-flash"]
+    modelos = ["gemini-flash-latest", "gemini-3-flash-preview", "gemini-3.8-flash"]
     ultimo_erro = ""
     for modelo in modelos:
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent?key={api_key.strip()}"
-            resp = requests.post(url, json=payload, timeout=45)
+            resp = requests.post(url, json=payload, timeout=60)
             if resp.status_code == 200:
                 dados = resp.json()
                 texto = dados["candidates"][0]["content"]["parts"][0]["text"]
                 texto_limpo = texto.replace("```json", "").replace("```", "").strip()
                 return json.loads(texto_limpo)
             else:
-                ultimo_erro = f"{modelo}: {resp.status_code} - {resp.text}"
+                ultimo_erro = f"{modelo} ({resp.status_code}): {resp.text}"
         except Exception as err:
             ultimo_erro = f"{modelo}: {err}"
     raise Exception(ultimo_erro)
@@ -96,7 +99,7 @@ if st.button("🚀 Organizar Pacotes e Rota", type="primary", use_container_widt
         st.stop()
 
     with st.spinner(f"🗺️ Localizando {len(pacotes)} pacotes e calculando o menor trajeto..."):
-        geolocator = Nominatim(user_agent="roteirizador_entregas_brasil_v3")
+        geolocator = Nominatim(user_agent="roteirizador_entregas_brasil_v4")
         try:
             ini = geolocator.geocode(ponto_partida, timeout=10)
         except Exception:
