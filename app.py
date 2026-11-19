@@ -50,12 +50,12 @@ if st.button("🚀 Organizar Pacotes e Rota", type="primary", use_container_widt
         try:
             client = genai.Client(
                 api_key=API_KEY.strip(),
-                http_options=types.HttpOptions(timeout=25000)
+                http_options=types.HttpOptions(timeout=60000)
             )
             imagens = []
             for arq in arquivos:
                 img = Image.open(arq)
-                img.thumbnail((1200, 1200))
+                img.thumbnail((1024, 1024))
                 imagens.append(img)
 
             prompt = """
@@ -64,7 +64,13 @@ if st.button("🚀 Organizar Pacotes e Rota", type="primary", use_container_widt
             [{"plataforma": "Mercado Livre ou Shopee ou Shein", "codigo": "4 últimos dígitos do rastreio ou nome do destinatário", "endereco": "Rua, Número, Bairro, Cidade - UF"}]
             Remova pacotes duplicados caso o mesmo endereço/código apareça em dois prints diferentes.
             """
-            resp = client.models.generate_content(model="gemini-3.8-flash", contents=[prompt] + imagens)
+            resp = client.models.generate_content(
+                model="gemini-3.8-flash",
+                contents=[prompt] + imagens,
+                config=types.GenerateContentConfig(
+                    thinking_config=types.ThinkingConfig(thinking_budget=0)
+                )
+            )
             texto_limpo = resp.text.replace("```json", "").replace("```", "").strip()
             pacotes = json.loads(texto_limpo)
         except Exception as e:
