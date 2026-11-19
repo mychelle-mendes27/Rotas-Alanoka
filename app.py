@@ -6,6 +6,7 @@ import requests
 import pandas as pd
 from PIL import Image
 from google import genai
+from google.genai import types
 from geopy.geocoders import Nominatim
 
 st.set_page_config(page_title="Organizador de Rotas", page_icon="📦", layout="centered")
@@ -47,8 +48,16 @@ if st.button("🚀 Organizar Pacotes e Rota", type="primary", use_container_widt
 
     with st.spinner("🔍 Lendo endereços e códigos nos prints..."):
         try:
-            client = genai.Client(api_key=API_KEY.strip())
-            imagens = [Image.open(arq) for arq in arquivos]
+            client = genai.Client(
+                api_key=API_KEY.strip(),
+                http_options=types.HttpOptions(timeout=25000)
+            )
+            imagens = []
+            for arq in arquivos:
+                img = Image.open(arq)
+                img.thumbnail((1200, 1200))
+                imagens.append(img)
+
             prompt = """
             Analise estas capturas de tela de aplicativos de entrega (Mercado Livre, Shopee, Shein).
             Extraia TODOS os pacotes listados e retorne APENAS um array JSON válido, sem texto extra e sem crases de markdown, neste formato exato:
